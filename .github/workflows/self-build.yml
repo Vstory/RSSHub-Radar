@@ -1,21 +1,92 @@
 name: self-build
 
-# 自用构建 + 直接发布（手动触发）。
-# 版本号：沿用上游 package.json 的 version，不做任何修改。
-# tag   ：上游版本号 + 构建日期时间（例 v2.2.0-20260915-1310），与上游 tag 区分开。
+# 自用构建 + 直接发布。
+# 触发：① 手动（Actions → self-build → Run workflow）；② 定时轮询上游 dev，上游一有新提交就自动构建并发布。
+# 构建对象：始终是上游 DIYgod/RSSHub-Radar 的 dev 分支代码（不是本 fork 的 dev）。
+# 版本号  ：沿用上游 package.json 的 version，不做任何修改。
+# tag     ：上游版本号 + 构建日期时间（例 v2.2.0-20260915-2120），与上游 tag 区分开。
+# 发布说明：给出上游提交的链接（上游 dev 的 HEAD）。
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"
 
 permissions:
   contents: write
 
+env:
+  UPSTREAM_REPO: DIYgod/RSSHub-Radar
+  UPSTREAM_BRANCH: dev
+
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    name: Check upstream
+    outputs:
+      upstream_sha: ${{ steps.up.outputs.sha }}
+      build: ${{ steps.up.outputs.build }}
+    steps:
+      - name: Resolve upstream HEAD
+        id: up
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          info=$(gh api "repos/${UPSTREAM_REPO}/commits/${UPSTREAM_BRANCH}" --jq '.sha + " " + .commit.committer.date')
+          sha=${info%% *}
+          committed=${info##* }
+          echo "上游 ${UPSTREAM_REPO}@${UPSTREAM_BRANCH} = ${sha}（${committed}）"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "手动触发 → 直接构建"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName // ""')
+          if [ -z "$tag" ]; then
+            echo "尚无发布记录 → 构建"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 最新发布说明里的 upstream-sha 标记 = 上次构建所用的上游提交
+          marker=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json body --jq .body \
+            | grep -oE 'upstream-sha:[0-9a-f]{7,40}' | head -1 | cut -d: -f2 || true)
+          if [ -n "$marker" ]; then
+            if [ "$marker" = "$sha" ]; then
+              echo "最新发布 ${tag} 已包含上游 ${sha} → 跳过"
+              echo "build=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "上游有新提交（${marker} → ${sha}）→ 构建"
+              echo "build=true" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+
+          # 没有标记的旧发布 → 时间兜底：发布晚于上游提交，视为已包含
+          created=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json createdAt --jq '.[0].createdAt')
+          if [[ "$created" > "$committed" ]]; then
+            echo "最新发布 ${tag}（${created}）晚于上游提交（${committed}）→ 跳过"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "上游提交（${committed}）晚于最新发布 → 构建"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
     runs-on: macos-latest
     name: Build & release
     steps:
       - uses: actions/checkout@v7
+        with:
+          repository: DIYgod/RSSHub-Radar
+          ref: dev
 
       - name: Cache pnpm modules
         uses: actions/cache@v6
@@ -57,9 +128,20 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_SHA: ${{ needs.check.outputs.upstream_sha }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          BUILT_AT: ${{ steps.meta.outputs.built_at }}
         run: |
-          gh release create "${{ steps.meta.outputs.tag }}" \
-            --target "${{ github.sha }}" \
-            --title "v${{ steps.meta.outputs.version }} self-build (${{ steps.meta.outputs.built_at }})" \
-            --notes "上游 dev @ ${{ github.sha }}；版本号沿用上游未修改；构建时间 ${{ steps.meta.outputs.built_at }}。" \
+          set -euo pipefail
+          short=${UPSTREAM_SHA:0:7}
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_REF_NAME" \
+            --title "v${VERSION} self-build (${BUILT_AT})" \
+            --notes "上游提交：[${short}](https://github.com/${UPSTREAM_REPO}/commit/${UPSTREAM_SHA})（${UPSTREAM_REPO} ${UPSTREAM_BRANCH}）
+          版本号：沿用上游 package.json 的 ${VERSION}，未做修改
+          构建时间：${BUILT_AT}
+
+          <!-- upstream-sha:${UPSTREAM_SHA} -->" \
             build/chrome-mv3-prod.zip build/firefox-mv3-prod.zip build/safari-mv3-prod.zip
