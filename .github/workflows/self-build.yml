@@ -1,0 +1,65 @@
+name: self-build
+
+# 自用构建 + 直接发布（手动触发）。
+# 版本号：沿用上游 package.json 的 version，不做任何修改。
+# tag   ：上游版本号 + 构建日期时间（例 v2.2.0-20260915-1310），与上游 tag 区分开。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    name: Build & release
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache pnpm modules
+        uses: actions/cache@v6
+        with:
+          path: ~/.pnpm-store
+          key: ${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-
+
+      - uses: pnpm/action-setup@v6.0.10
+        with:
+          run_install: true
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Package the extension for Chrome
+        run: pnpm zip
+
+      - name: Package the extension for Firefox
+        run: pnpm zip:firefox
+
+      - name: Package the extension for Safari
+        run: pnpm build:safari:zip
+
+      - name: Compute release tag
+        id: meta
+        run: |
+          version=$(node -p "require('./package.json').version")
+          stamp=$(TZ=Asia/Shanghai date +%Y%m%d-%H%M)
+          built_at=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M %Z')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}-${stamp}" >> "$GITHUB_OUTPUT"
+          echo "built_at=$built_at" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.meta.outputs.tag }}" \
+            --target "${{ github.sha }}" \
+            --title "v${{ steps.meta.outputs.version }} self-build (${{ steps.meta.outputs.built_at }})" \
+            --notes "上游 dev @ ${{ github.sha }}；版本号沿用上游未修改；构建时间 ${{ steps.meta.outputs.built_at }}。" \
+            build/chrome-mv3-prod.zip build/firefox-mv3-prod.zip build/safari-mv3-prod.zip
