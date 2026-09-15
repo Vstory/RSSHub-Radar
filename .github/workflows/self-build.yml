@@ -6,6 +6,7 @@ name: self-build
 # 版本号  ：沿用上游 package.json 的 version，不做任何修改。
 # tag     ：上游版本号 + 构建日期时间（例 v2.2.0-20260915-2120），与上游 tag 区分开。
 # 发布说明：给出上游提交的链接（上游 dev 的 HEAD）。
+# 扩展名  ：仅本 fork 构建出的包改为「RSSHub Radar Dev」，便于在扩展列表里与官方版区分（上游源码不动，构建时打补丁）。
 
 on:
   workflow_dispatch:
@@ -105,6 +106,32 @@ jobs:
         with:
           node-version: 22.x
           cache: "pnpm"
+
+      - name: Rename extension to "RSSHub Radar Dev"
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("fs");
+          const OLD = "RSSHub Radar";
+          const NEW = "RSSHub Radar Dev";
+
+          // 1) manifest.name —— 扩展列表里显示的名字（wxt.config.ts 硬编码，未走 i18n）
+          const cfg = fs.readFileSync("wxt.config.ts", "utf8");
+          const patched = cfg.replace(/name:\s*"RSSHub Radar"/, 'name: "' + NEW + '"');
+          if (patched === cfg) throw new Error("wxt.config.ts 中未匹配到 name 字段");
+          fs.writeFileSync("wxt.config.ts", patched);
+
+          // 2) displayName + Safari 打包目录名（Xcode 工程名跟随 manifest.name，不改会打包失败）
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          pkg.displayName = NEW;
+          for (const [k, v] of Object.entries(pkg.scripts)) {
+            if (typeof v === "string" && v.includes(OLD)) pkg.scripts[k] = v.split(OLD).join(NEW);
+          }
+          fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+
+          console.log("扩展名已改为:", NEW);
+          NODE
+          grep -n "RSSHub Radar Dev" wxt.config.ts package.json
 
       - name: Package the extension for Chrome
         run: pnpm zip
