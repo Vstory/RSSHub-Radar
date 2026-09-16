@@ -11,7 +11,10 @@ name: self-build
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"
+    # UTC 的第 8/23/38/53 分（北京 :08/:23/:38/:53）。
+    # 刻意避开整点与半点：那是 Actions 调度器最拥挤的时段，官方文档说明高负载时
+    # 定时任务会被延迟甚至直接丢弃。每小时 4 次留有冗余，丢一次最多晚 15 分钟。
+    - cron: "8,23,38,53 * * * *"
 
 permissions:
   contents: write
