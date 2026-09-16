@@ -1,7 +1,9 @@
 name: self-build
 
 # 自用构建 + 直接发布。
-# 触发：① 手动（Actions → self-build → Run workflow）；② 定时轮询上游 dev，上游一有新提交就自动构建并发布。
+# 触发：仅 workflow_dispatch —— 手动（Actions → self-build → Run workflow），或由外部调度器检测到上游 dev 有新提交后调 API 触发。
+#       刻意不用 GitHub schedule：fork 收不到上游的 push 事件，且 schedule 会被延迟甚至直接丢弃
+#       （本仓库实测：声明每 30 分钟，实际 2~5.5 小时才跑一次，触发点也不在声明的分钟上）。
 # 构建对象：始终是上游 DIYgod/RSSHub-Radar 的 dev 分支代码（不是本 fork 的 dev）。
 # 版本号  ：沿用上游 package.json 的 version，不做任何修改。
 # tag     ：上游版本号 + 构建日期时间（例 v2.2.0-20260915-2120），与上游 tag 区分开。
@@ -10,11 +12,6 @@ name: self-build
 
 on:
   workflow_dispatch:
-  schedule:
-    # UTC 的第 8/23/38/53 分（北京 :08/:23/:38/:53）。
-    # 刻意避开整点与半点：那是 Actions 调度器最拥挤的时段，官方文档说明高负载时
-    # 定时任务会被延迟甚至直接丢弃。每小时 4 次留有冗余，丢一次最多晚 15 分钟。
-    - cron: "8,23,38,53 * * * *"
 
 permissions:
   contents: write
